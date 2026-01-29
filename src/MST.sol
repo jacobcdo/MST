@@ -49,8 +49,28 @@ contract MultiSigTreasury {
 
     constructor(address[] memory _owners, uint256 _threshold) {
         // will figure this out later lol
+           if (_owners.length == 0) revert InvalidThreshold(_threshold);
+    if (_threshold == 0 || _threshold > _owners.length) revert InvalidThreshold(_threshold);
+
+    for (uint256 i = 0; i < _owners.length; i++) {
+        address owner = _owners[i];
+        if (owner == address(0)) revert InvalidOwner(owner);
+        if (_isOwner[owner]) revert InvalidOwner(owner); // duplicate
+
+        _isOwner[owner] = true;
+        owners.push(owner);
+        emit OwnerAdded(owner);
     }
 
+    threshold = _threshold;
+    emit ThresholdChanged(_threshold);
+    }
+
+    recieve() external payable {}
+
+    fallback() external payable {}
+
+    // propose a transaction
     function proposeTransaction(
         address to,
         uint256 value,
@@ -105,19 +125,28 @@ contract MultiSigTreasury {
         emit ApprovalRevoked(txId, msg.sender);
     }
 
-    function executeTransaction(uint256 txId) external onlyOwner {
-        if (txId >= _transactions.length) revert TxDoesNotExist(txId);
+function executeTransaction(uint256 txId) external onlyOwner {
+    if (txId >= _transactions.length) revert TxDoesNotExist(txId);
 
-        Transaction storage txn = _transactions[txId];
+    Transaction storage txn = _transactions[txId];
 
-        if (txn.executed) revert TxAlreadyExecuted(txId);
+    if (txn.executed) revert TxAlreadyExecuted(txId);
 
-        require (txn.approvalCount >= threshold, "Not enough approval votes");
+    if (txn.approvalCount < threshold) revert InsufficientApprovals(txId);
 
-        txn.executed = true;
+    txn.executed = true;
 
-
+    (bool ok, bytes memory ret) = txn.to.call{value: txn.value}(txn.data);
+    if (!ok) {
+        // bubble revert data if present
+        assembly {
+            revert(add(ret, 0x20), mload(ret))
+        }
     }
+
+    emit TransactionExecuted(txId);
+}
+
 
 
     function addOwner(address owner) external {
@@ -131,9 +160,40 @@ contract MultiSigTreasury {
         emit OwnerAdded(owner);
     }
 
-    function removeOwner(address owner) external {}
+    function removeOwner(address owner) external {
+        if (msg.sender != address(this)) revert NotOwner();
 
-    function changeThreshold(uint256 newThreshold) external {}
+        if(!_isOwner[owner]) revert InvalidOwner(owner);
+
+        if(owners.length - 1 < threshold) {
+            revert InvalidThreshold(threshold);
+        }
+
+        _isOwner[owner] = false;
+
+        uint256 len = owners.length;
+        for (uint256 i = 0; i < len; i++) {
+            if (owners[i] == owner) {
+                owners[i] = owners[len -1];
+                owners.pop();
+                break;
+            }
+        }
+
+        emit OwnerRemoved(owner);
+    }
+
+    function changeThreshold(uint256 newThreshold) external {
+        if (msg.sender != address(this)) revert NotOwner();
+
+        if(_newThreshold == 0 || _newThreshold > owners.length) {
+            revert InvalidThreshold(_newThreshold);
+        }
+
+        threshold = _newThreshold;
+
+        emit ThresholdChanged(_newThreshold);
+    }
 
     function isOwner(address account) external view returns (bool) {
         return _isOwner[account];
